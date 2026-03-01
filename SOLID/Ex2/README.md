@@ -60,119 +60,229 @@ Saved invoice: INV-1001 (lines=7)
 ## 10. Stretch goals
 - Add a second invoice for a staff member with different discount policy.
 
-# Preparation Notes
 
-## 11. What does this program do?
 
-A campus cafeteria billing system. A student orders food, the system generates an invoice with tax, discount, and saves it.
+---
 
-### Flow
-- `Main` creates `CafeteriaSystem` and adds 3 menu items: Veg Thali (₹80), Coffee (₹30), Sandwich (₹60)
-- Student places an order: 2x Veg Thali + 1x Coffee
-- `checkout("student", order)` is called, which inside one single method:
-  - Generates invoice ID → `INV-1001`
-  - Loops through order lines, looks up menu, calculates line totals → (160 + 30 = ₹190)
-  - Calls `TaxRules.taxPercent("student")` → 5% → tax = ₹9.50
-  - Calls `DiscountRules.discountAmount("student", 190, 2)` → subtotal ≥ 180 → discount = ₹10
-  - Calculates total → 190 + 9.50 - 10 = ₹189.50
-  - Formats entire invoice string inline using `StringBuilder`
-  - Prints invoice to console
-  - Saves invoice to `FileStore` (in-memory map)
-  - Prints "Saved invoice: INV-1001 (lines=7)"
+# Preparation Notes (Diagram Style)
 
-### Supporting classes
-- `MenuItem` — data holder (id, name, price)
-- `OrderLine` — data holder (itemId, qty)
-- `TaxRules` — static method, returns tax % based on customer type
-- `DiscountRules` — static method, returns discount amount based on customer type, subtotal, and line count
-- `InvoiceFormatter` — has one method `identityFormat()` that returns input unchanged (dead code)
-- `FileStore` — in-memory persistence using a `HashMap`
+## 11. Current Design
 
-## 12. Design issues
-
-### Issue 1 — `checkout()` is a god method → SRP violation
-One method handles pricing, tax, discount, formatting, printing, and persistence. That's 6 responsibilities. If tax rules change, you edit this method. If invoice format changes, you edit the same method. 4 different reasons to change in one class.
-
-### Issue 2 — Tax rules via static call → DIP violation
-Line 24: `TaxRules.taxPercent(customerType)` is a static method call. `CafeteriaSystem` (high-level) is directly coupled to `TaxRules` (low-level). No abstraction in between. Can't swap tax strategy. Can't mock in tests.
-
-### Issue 3 — Discount rules via static call → DIP violation
-Line 27: `DiscountRules.discountAmount(...)` — same problem. Hardwired to a concrete implementation. Want a different discount strategy? You're stuck editing the same class.
-
-### Issue 4 — Formatting mixed with calculations → SRP violation
-Lines 13-34: `StringBuilder` invoice construction is woven between pricing math. Two concerns tangled. Can't change invoice layout without touching billing logic.
-
-### Issue 5 — `FileStore` is concrete and created internally → DIP violation
-Line 5: `private final FileStore store = new FileStore()`. Not injected. Not behind an interface. High-level module creates its own low-level dependency. Can't swap storage. Can't test without writing.
-
-### Issue 6 — `InvoiceFormatter` is fake dead code → SRP violation (indirect)
-`identityFormat()` returns input unchanged. Actual formatting lives inside `checkout()`. The formatting responsibility is still inside `CafeteriaSystem`. SRP remains broken despite this class existing.
-
-## 13. Which SOLID principle is violated?
-
-### Primary: SRP (Single Responsibility Principle)
-> "A class should have only one reason to change."
-
-`CafeteriaSystem` has 4 reasons to change: tax rules, discount policy, invoice format, storage mechanism.
-
-### Secondary: DIP (Dependency Inversion Principle)
-> "High-level modules should not depend on low-level modules. Both should depend on abstractions."
-
-`FileStore` is concrete and created internally. `TaxRules` and `DiscountRules` are accessed via static calls. No abstractions anywhere.
-
-## 14. My fix
-
-### 14a. Created `TaxCalculator` interface
-```java
-public interface TaxCalculator {
-    double taxPercent(String customerType);
-}
 ```
-`TaxRules` now implements `TaxCalculator`. No longer static. Can create `GSTCalculator implements TaxCalculator` tomorrow with zero change to `CafeteriaSystem`.
+┌──────────────────────────────────────────────────────────────┐
+│                         Main.java                            │
+│──────────────────────────────────────────────────────────────│
+│  1. Creates CafeteriaSystem                                  │
+│  2. Adds menu:                                               │
+│       M1 → Veg Thali  ₹80                                   │
+│       C1 → Coffee     ₹30                                   │
+│       S1 → Sandwich   ₹60                                   │
+│  3. Order: 2x Veg Thali + 1x Coffee                         │
+│  4. Calls sys.checkout("student", order)                     │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│              CafeteriaSystem.checkout()                       │
+│          THE GOD METHOD — does everything                    │
+│──────────────────────────────────────────────────────────────│
+│                                                              │
+│  STEP 1: Generate ID                                         │
+│  │  invId = "INV-1001"                                       │
+│  │                                                           │
+│  STEP 2: Calculate line totals                               │
+│  │  Veg Thali: 80 × 2 = 160                                 │
+│  │  Coffee:    30 × 1 =  30                                 │
+│  │  subtotal = ₹190                                          │
+│  │                                                           │
+│  STEP 3: Tax (static call)                                   │
+│  │  TaxRules.taxPercent("student") → 5%                      │
+│  │  tax = 190 × 0.05 = ₹9.50                                │
+│  │                                                           │
+│  STEP 4: Discount (static call)                              │
+│  │  DiscountRules.discountAmount("student", 190, 2)          │
+│  │  subtotal ≥ 180 → discount = ₹10.00                      │
+│  │                                                           │
+│  STEP 5: Total                                               │
+│  │  total = 190 + 9.50 - 10 = ₹189.50                       │
+│  │                                                           │
+│  STEP 6: Format invoice (StringBuilder — INLINE)             │
+│  │  "Invoice# INV-1001"                                      │
+│  │  "- Veg Thali x2 = 160.00"                               │
+│  │  "- Coffee x1 = 30.00"                                   │
+│  │  "Subtotal: 190.00"                                       │
+│  │  "Tax(5%): 9.50"                                          │
+│  │  "Discount: -10.00"                                       │
+│  │  "TOTAL: 189.50"                                          │
+│  │                                                           │
+│  STEP 7: InvoiceFormatter.identityFormat(str) → returns str  │
+│  │        ^^^ DOES NOTHING — dead code                       │
+│  │                                                           │
+│  STEP 8: System.out.print(printable)                         │
+│  │                                                           │
+│  STEP 9: store.save(invId, printable)                        │
+│          store = new FileStore() ← hardcoded inside class    │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+┌────────────────┐  ┌──────────────────┐  ┌────────────────────┐
+│   TaxRules     │  │  DiscountRules   │  │    FileStore       │
+│────────────────│  │──────────────────│  │────────────────────│
+│ static method  │  │ static method    │  │ NOT an interface   │
+│ taxPercent()   │  │ discountAmount() │  │ created internally │
+│                │  │                  │  │ with new FileStore()│
+│ "student" → 5% │  │ "student" +     │  │                    │
+│ "staff"   → 2% │  │  sub≥180 → ₹10  │  │ save(name,content) │
+│ default   → 8% │  │ "staff" +       │  │ countLines(name)   │
+│                │  │  lines≥3 → ₹15  │  │                    │
+│                │  │  else    → ₹5   │  │ stores in HashMap  │
+└────────────────┘  └──────────────────┘  └────────────────────┘
 
-### 14b. Created `DiscountCalculator` interface
-```java
-public interface DiscountCalculator {
-    double discountAmount(String customerType, double subtotal, int distinctLines);
-}
+┌────────────────────────┐
+│   InvoiceFormatter     │
+│────────────────────────│
+│ identityFormat(s):     │
+│   return s;            │
+│                        │
+│ DEAD CODE — does       │
+│ nothing. Real format   │
+│ is inside checkout()   │
+└────────────────────────┘
 ```
-`DiscountRules` now implements `DiscountCalculator`. Want a festival discount? Create `FestivalDiscount implements DiscountCalculator`. Plug in. Done.
 
-### 14c. Created `InvoiceStore` interface
-```java
-public interface InvoiceStore {
-    void save(String name, String content);
-    int countLines(String name);
-}
+## 12. Issues
+
 ```
-`FileStore` now implements `InvoiceStore`. Want database storage? Create `DbStore implements InvoiceStore`. `CafeteriaSystem` doesn't know or care.
+┌──────────────────────────────────────────────────────────────┐
+│         CafeteriaSystem.checkout() — GOD METHOD              │
+│──────────────────────────────────────────────────────────────│
+│                                                              │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌───────────┐│
+│  │  PRICING   │ │    TAX     │ │  DISCOUNT  │ │ FORMATTING││
+│  │  subtotal  │ │  5% logic  │ │  ₹10 logic │ │ StringBuilder
+│  │  calc      │ │            │ │            │ │ inline    ││
+│  └────────────┘ └────────────┘ └────────────┘ └───────────┘│
+│                                                              │
+│  ┌────────────┐ ┌────────────────────────────────────────┐  │
+│  │  PRINTING  │ │          PERSISTENCE                   │  │
+│  │  sysout    │ │  FileStore.save() + countLines()       │  │
+│  └────────────┘ └────────────────────────────────────────┘  │
+│                                                              │
+│  SRP VIOLATION — 4 reasons to change in ONE class:          │
+│     1. Tax rules change       → edit checkout()             │
+│     2. Discount policy change → edit checkout()             │
+│     3. Invoice format change  → edit checkout()             │
+│     4. Storage change         → edit checkout()             │
+└──────────────────────────────────────────────────────────────┘
 
-### 14d. Made `InvoiceFormatter` real
-All `StringBuilder` formatting extracted from `checkout()` into `InvoiceFormatter.format()`. Takes 8 parameters (invId, lines, menu, subtotal, taxPct, tax, discount, total). Returns the formatted invoice string. The original was a fake passthrough. Now it owns formatting completely.
 
-### 14e. Refactored `CafeteriaSystem`
-Constructor takes all 4 dependencies via injection:
-```java
-public CafeteriaSystem(InvoiceStore store, TaxCalculator taxCalculator,
-        DiscountCalculator discountCalculator, InvoiceFormatter formatter)
+DIP VIOLATIONS — 3 concrete couplings, zero abstractions:
+
+  CafeteriaSystem ──── static call ────► TaxRules
+                       (can't swap)       taxPercent() is static
+                       (can't mock)       permanently married
+
+  CafeteriaSystem ──── static call ────► DiscountRules
+                       (can't swap)       discountAmount() is static
+                       (can't mock)       permanently married
+
+  CafeteriaSystem ──── new FileStore() ── ► FileStore
+                       (created inside)    not injected
+                       (no interface)      can't swap to DB
+
+
+DEAD CODE:
+
+  InvoiceFormatter.identityFormat()
+  │
+  │  input: "Invoice# INV-1001..."
+  │  output: "Invoice# INV-1001..."  ← SAME STRING
+  │
+  └── Pretends to format but does nothing.
+      Real formatting is inside checkout().
 ```
-`checkout()` becomes a pure orchestrator:
-1. Calculate subtotal (core billing logic — stays here)
-2. Ask `taxCalculator` → get tax
-3. Ask `discountCalculator` → get discount
-4. Ask `formatter` → get formatted string
-5. Print it
-6. Ask `store` → save it
 
-No formatting code. No static calls. No concrete dependencies.
+## 13. The Fix
 
-### 14f. Wiring in `Main`
-```java
-InvoiceStore store = new FileStore();
-TaxCalculator taxCalc = new TaxRules();
-DiscountCalculator discountCalc = new DiscountRules();
-InvoiceFormatter formatter = new InvoiceFormatter();
-CafeteriaSystem sys = new CafeteriaSystem(store, taxCalc, discountCalc, formatter);
 ```
-All components created externally and injected. `CafeteriaSystem` has no idea which concrete classes it uses.
+┌──────────────────────────────────────────────────────────────┐
+│                      Main.java (wiring)                      │
+│──────────────────────────────────────────────────────────────│
+│  InvoiceStore store       = new FileStore();                 │
+│  TaxCalculator taxCalc    = new TaxRules();                  │
+│  DiscountCalculator disc  = new DiscountRules();             │
+│  InvoiceFormatter fmt     = new InvoiceFormatter();          │
+│                                                              │
+│  sys = new CafeteriaSystem(store, taxCalc, disc, fmt);       │
+│                                                              │
+│  All created EXTERNALLY, injected via CONSTRUCTOR            │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────┐
+│              CafeteriaSystem (REFACTORED)                     │
+│              Now a PURE ORCHESTRATOR                          │
+│──────────────────────────────────────────────────────────────│
+│  Fields (all interfaces/abstractions):                       │
+│    - InvoiceStore store                                      │
+│    - TaxCalculator taxCalculator                             │
+│    - DiscountCalculator discountCalculator                   │
+│    - InvoiceFormatter formatter                              │
+│──────────────────────────────────────────────────────────────│
+│  checkout(customerType, lines):                              │
+│    1. Calculate subtotal (core billing — stays here)         │
+│    2. taxCalc.taxPercent(customerType)    → get tax          │
+│    3. discountCalc.discountAmount(...)    → get discount     │
+│    4. formatter.format(invId, lines, ...) → get string       │
+│    5. System.out.print(printable)                            │
+│    6. store.save(invId, printable)                           │
+│                                                              │
+│  NO formatting code. NO static calls. NO concrete deps.     │
+└──────┬──────────────┬────────────────┬──────────────┬────────┘
+       │              │                │              │
+       ▼              ▼                ▼              ▼
+┌─────────────┐ ┌───────────────┐ ┌────────────┐ ┌──────────────┐
+│ «interface» │ │ «interface»   │ │ «interface»│ │ InvoiceFormat│
+│ TaxCalc     │ │ DiscountCalc  │ │ InvoiceStr │ │ -ter         │
+│─────────────│ │───────────────│ │────────────│ │──────────────│
+│ taxPercent  │ │ discountAmt   │ │ save()     │ │ format()     │
+│ (custType)  │ │ (custType,    │ │ countLines │ │ builds full  │
+│             │ │  sub, lines)  │ │ ()         │ │ invoice str  │
+└──────┬──────┘ └───────┬───────┘ └─────┬──────┘ │ with all     │
+       │                │               │        │ line items,  │
+       ▼                ▼               ▼        │ tax, disc,   │
+┌─────────────┐ ┌───────────────┐ ┌────────────┐│ total        │
+│ TaxRules    │ │ DiscountRules │ │ FileStore  ││ (REAL work)  │
+│ implements  │ │ implements    │ │ implements │└──────────────┘
+│ TaxCalc     │ │ DiscountCalc  │ │ InvoiceStr │
+│─────────────│ │───────────────│ │────────────│
+│ student→ 5% │ │ student+      │ │ HashMap    │
+│ staff  → 2% │ │  sub≥180→₹10  │ │ save()     │
+│ default→ 8% │ │ staff+        │ │ countLines │
+│             │ │  lines≥3→₹15  │ │ ()         │
+└─────────────┘ └───────────────┘ └────────────┘
+
+
+WHAT CHANGED — BEFORE vs AFTER:
+
+  BEFORE                           AFTER
+  ──────                           ─────
+  TaxRules: static method    →    TaxRules implements TaxCalculator
+  DiscountRules: static      →    DiscountRules implements DiscountCalculator
+  FileStore: new FileStore() →    FileStore implements InvoiceStore
+  InvoiceFormatter: FAKE     →    InvoiceFormatter: REAL format()
+  checkout(): does everything→    checkout(): only orchestrates
+
+
+WHY SWAP IS EASY NOW:
+
+  Want GST tax?     → GSTCalc implements TaxCalculator     → plug in Main
+  Want festival     → FestivalDisc implements DiscountCalc  → plug in Main
+    discount?
+  Want real DB?     → DbStore implements InvoiceStore       → plug in Main
+  Want HTML invoice?→ HtmlFormatter (new class)             → plug in Main
+
+  CafeteriaSystem NEVER changes. SRP + DIP satisfied.
+```
 
