@@ -1,4 +1,11 @@
-// Smell: unused console wrapper
-public class SimpleConsole {
-    public void log(String s) { System.out.println(s); }
+interface Checker {
+    int check(Submission s);
+}
+
+interface Grader {
+    int grade(Submission s);
+}
+
+interface Writer {
+    String write(Submission s, int plagScore, int codeScore);
 }
