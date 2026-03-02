@@ -57,7 +57,7 @@ JSON: OK bytes=61
 - Add a new exporter without changing existing exporters.
 
 
-
+---
 
 # Preparation Notes (Diagram Style)
 
@@ -68,215 +68,184 @@ JSON: OK bytes=61
 │                         Main.java                            │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  BookingRequest req = new BookingRequest(                     │
-│      LegacyRoomTypes.DOUBLE,       // roomType = int 2       │
-│      List.of(AddOn.LAUNDRY, AddOn.MESS)  // add-ons list     │
+│  ExportRequest req = new ExportRequest(                      │
+│      "Weekly Report",                                        │
+│      "Name,Score\nAyaan,82\nRiya,91\n"  ← 30 chars          │
 │  );                                                          │
 │                                                              │
-│  FakeBookingRepo repo = new FakeBookingRepo();  ⚠ CONCRETE   │
+│  Exporter pdf  = new PdfExporter();                          │
+│  Exporter csv  = new CsvExporter();                          │
+│  Exporter json = new JsonExporter();                         │
 │                                                              │
-│  HostelFeeCalculator calc = new HostelFeeCalculator(repo);   │
-│  calc.process(req);                                          │
+│  safe(pdf, req)   → try e.export(req) catch RuntimeException │
+│  safe(csv, req)   → try e.export(req) catch RuntimeException │
+│  safe(json, req)  → try e.export(req) catch RuntimeException │
 │                                                              │
+│  ⚠ Main NEEDS try-catch because it CAN'T TRUST              │
+│    that all exporters behave the same way.                   │
+│    If substitutability worked, try-catch wouldn't be needed. │
 └──────────────────────────┬───────────────────────────────────┘
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
-│     HostelFeeCalculator                                      │
+│           abstract class Exporter                            │
 │──────────────────────────────────────────────────────────────│
+│  abstract ExportResult export(ExportRequest req)             │
 │                                                              │
-│  Fields:                                                     │
-│    private final FakeBookingRepo repo;  ⚠ CONCRETE CLASS     │
+│  ⚠ NO CONTRACT DEFINED:                                     │
+│    - What if req is null?         → not specified            │
+│    - What if body is very long?   → not specified            │
+│    - Can it throw?                → not specified            │
+│    - Must it always return bytes? → not specified            │
 │                                                              │
-│  Constructor:                                                │
-│    HostelFeeCalculator(FakeBookingRepo repo)                 │
-│                          ▲ no interface                      │
-│──────────────────────────────────────────────────────────────│
-│                                                              │
-│  process(BookingRequest req):                                │
-│  │                                                           │
-│  │ STEP 1: monthly = calculateMonthly(req)  ← see below     │
-│  │                                                           │
-│  │ STEP 2: deposit = new Money(5000.00)     ← hardcoded     │
-│  │                                                           │
-│  │ STEP 3: ReceiptPrinter.print(req, monthly, deposit)       │
-│  │         → “Room: DOUBLE | AddOns: [LAUNDRY, MESS]”       │
-│  │         → “Monthly: 16500.00”                             │
-│  │         → “Deposit: 5000.00”                              │
-│  │         → “TOTAL DUE NOW: 21500.00”                       │
-│  │                                                           │
-│  │ STEP 4: bookingId = “H-7781”                              │
-│  │                                                           │
-│  │ STEP 5: repo.save(“H-7781”, req, monthly, deposit)        │
-│  │         → “Saved booking: H-7781”                         │
-│  │                                                           │
-│──────────────────────────────────────────────────────────────│
-│                                                              │
-│  calculateMonthly(BookingRequest req):                        │
-│  │                                                           │
-│  │ ⚠ ROOM PRICING — switch-case block:                      │
-│  │ ┌─────────────────────────────────────────────────┐       │
-│  │ │  switch (req.roomType) {                        │       │
-│  │ │      case SINGLE (1) → base = 14000.0           │       │
-│  │ │      case DOUBLE (2) → base = 15000.0  ◄── HIT │       │
-│  │ │      case TRIPLE (3) → base = 12000.0           │       │
-│  │ │      default         → base = 16000.0           │       │
-│  │ │  }                                              │       │
-│  │ └─────────────────────────────────────────────────┘       │
-│  │                                                           │
-│  │ ⚠ ADD-ON PRICING — if-else chain:                        │
-│  │ ┌─────────────────────────────────────────────────┐       │
-│  │ │  for (AddOn a : req.addOns) {                   │       │
-│  │ │      if (a == MESS)         add += 1000.0       │       │
-│  │ │      else if (a == LAUNDRY) add += 500.0 ◄── HIT│      │
-│  │ │      else if (a == GYM)     add += 300.0        │       │
-│  │ │  }                                              │       │
-│  │ └─────────────────────────────────────────────────┘       │
-│  │                                                           │
-│  │ return Money(15000 + 500 + 1000) = Money(16500.00)        │
-│  │                                                           │
-└──────────────────────────────────────────────────────────────┘
-         │                              │
-         ▼                              ▼
-┌────────────────────┐      ┌────────────────────────┐
-│  ReceiptPrinter    │      │  FakeBookingRepo       │
-│────────────────────│      │────────────────────────│
-│ static print()     │      │ NO interface           │
-│ takes req, monthly,│      │ save(id, req, m, d)    │
-│ deposit            │      │ → prints “Saved...”    │
-│ prints 4 lines     │      │                        │
-└────────────────────┘      └────────────────────────┘
+│  Each subclass makes its OWN rules.                          │
+└──────┬───────────────┬───────────────┬───────────────────────┘
+       │               │               │
+       ▼               ▼               ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ PdfExporter  │ │ CsvExporter  │ │ JsonExporter │
+│──────────────│ │──────────────│ │──────────────│
+│ export(req): │ │ export(req): │ │ export(req): │
+│              │ │              │ │              │
+│ ⚠ if body   │ │ ⚠ replaces   │ │ ⚠ if req ==  │
+│   > 20 chars │ │   \n → space │ │   null →     │
+│   THROWS     │ │   ,  → space │ │   return     │
+│   Illegal-   │ │              │ │   empty      │
+│   Argument-  │ │   DATA IS    │ │   result     │
+│   Exception  │ │   CORRUPTED  │ │              │
+│              │ │   silently   │ │ others would │
+│ TIGHTENS     │ │              │ │ crash on null│
+│ precondition │ │ WEAKENS      │ │              │
+│ (base allows │ │ postcondition│ │ INCONSISTENT │
+│  any length) │ │ (data not    │ │ contract     │
+│              │ │  preserved)  │ │              │
+└──────────────┘ └──────────────┘ └──────────────┘
 
-┌────────────────┐  ┌────────────────┐  ┌────────────────┐
-│ BookingRequest  │  │ LegacyRoomTypes│  │ AddOn (enum)   │
-│────────────────│  │────────────────│  │────────────────│
-│ roomType: int  │  │ SINGLE = 1     │  │ MESS           │
-│ addOns: List   │  │ DOUBLE = 2     │  │ LAUNDRY        │
-│ <AddOn>        │  │ TRIPLE = 3     │  │ GYM            │
-│                │  │ DELUXE = 4     │  │                │
-│                │  │ nameOf(int)→str│  │                │
-└────────────────┘  └────────────────┘  └────────────────┘
+EXECUTION for req = ("Weekly Report", "Name,Score\nAyaan,82\nRiya,91\n"):
 
-┌────────────────┐
-│ Money          │
-│────────────────│
-│ amount: double │
-│ plus(Money)    │
-│ toString()     │
-│ → “16500.00”   │
-└────────────────┘
+  pdf.export(req):
+    body.length() = 30, > 20
+    → THROWS IllegalArgumentException("PDF cannot handle content > 20 chars")
+    → Main catches it → "ERROR: PDF cannot handle content > 20 chars"
+
+  csv.export(req):
+    body = "Name,Score\nAyaan,82\nRiya,91\n"
+    → replace \n with space: "Name,Score Ayaan,82 Riya,91 "
+    → replace , with space:  "Name Score Ayaan 82 Riya 91 "
+    → csv = "title,body\nWeekly Report,Name Score Ayaan 82 Riya 91 \n"
+    → 42 bytes → "OK bytes=42"
+    ⚠ DATA CORRUPTED: commas and newlines that were PART OF THE DATA are gone
+
+  json.export(req):
+    req != null, so normal path
+    → json = {"title":"Weekly Report","body":"Name,Score\nAyaan,82\nRiya,91\n"}
+    → 61 bytes → "OK bytes=61"
 ```
 
 ## 12. Issues
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  ISSUE 1: switch on roomType               [OCP VIOLATION]   │
+│  ISSUE 1: PdfExporter TIGHTENS precondition  [LSP VIOLATION] │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  WHERE: calculateMonthly() → the switch block                │
+│  WHERE: PdfExporter.export()                                 │
 │                                                              │
-│  switch (req.roomType) {                                     │
-│      SINGLE → 14000                                          │
-│      DOUBLE → 15000                                          │
-│      TRIPLE → 12000                                          │
-│      default → 16000                                         │
-│  }                                                           │
+│  if (req.body.length() > 20)                                 │
+│      throw new IllegalArgumentException(...)                 │
 │                                                              │
-│  WHY IT'S BAD:                                               │
-│    Want to add SUITE room (₹20000)?                          │
-│      → Must open calculateMonthly()                          │
-│      → Must add: case SUITE → base = 20000.0                │
-│      → Risk breaking existing cases                          │
+│  BASE CONTRACT (Exporter):                                   │
+│    export(ExportRequest) → ExportResult                      │
+│    No mention of length limits. Any ExportRequest is valid.  │
 │                                                              │
-│    Want to add AC room (₹18000)?                             │
-│      → Must open SAME method AGAIN                           │
-│      → Add another case                                      │
+│  PDF SAYS: "I only accept body ≤ 20 chars"                   │
+│    This is a TIGHTER precondition than the base.             │
 │                                                              │
-│    Every. New. Room. Type. = edit this switch.                │
-│    Class is NOT closed for modification.                     │
+│  LSP RULE: Subtype must accept EVERYTHING the base accepts.  │
+│    Subtype can accept MORE (weaken precondition) = OK        │
+│    Subtype can accept LESS (tighten precondition) = VIOLATES │
 │                                                              │
-│  OCP says: open for extension, closed for modification.      │
-│  Here:     must MODIFY the class to EXTEND functionality.    │
+│  RESULT: Caller writes code for Exporter, passes valid req.  │
+│    Swap in PdfExporter → BOOM, exception at runtime.         │
+│    Not substitutable.                                        │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  ISSUE 2: if-else chain for add-ons        [OCP VIOLATION]   │
+│  ISSUE 2: CsvExporter WEAKENS postcondition  [LSP VIOLATION] │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  WHERE: calculateMonthly() → the for-loop with if-else       │
+│  WHERE: CsvExporter.export()                                 │
 │                                                              │
-│  for (AddOn a : req.addOns) {                                │
-│      if (a == MESS)         add += 1000.0                    │
-│      else if (a == LAUNDRY) add += 500.0                     │
-│      else if (a == GYM)     add += 300.0                     │
-│  }                                                           │
+│  body.replace("\n", " ").replace(",", " ")                   │
 │                                                              │
-│  WHY IT'S BAD:                                               │
-│    Want to add WIFI add-on (₹200)?                           │
-│      → Must open SAME calculateMonthly() method              │
-│      → Must add: else if (a == WIFI) add += 200.0           │
+│  EXPECTED POSTCONDITION:                                     │
+│    Exported data should faithfully represent the input.      │
+│    What goes in should come back out (in the format).        │
 │                                                              │
-│    TWO different OCP violations in ONE method:               │
-│      switch for rooms + if-else for add-ons                  │
-│      Both force modification for extension.                  │
+│  CSV SAYS: "I'll silently destroy commas and newlines"       │
+│    Input:  "Name,Score\nAyaan,82"                            │
+│    Output: "Name Score Ayaan 82"  ← DATA CORRUPTED           │
+│                                                              │
+│  This is a WEAKER postcondition — promises LESS than base.   │
+│                                                              │
+│  LSP RULE: Subtype must guarantee EVERYTHING the base does.  │
+│    Subtype can guarantee MORE (strengthen postcon) = OK      │
+│    Subtype can guarantee LESS (weaken postcon) = VIOLATES    │
+│                                                              │
+│  RESULT: Caller expects data integrity.                      │
+│    Swap in CsvExporter → data silently corrupted.            │
+│    No error. No warning. Just wrong output.                  │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  ISSUE 3: Concrete repo dependency         [DIP VIOLATION]   │
+│  ISSUE 3: JsonExporter handles null differently [LSP VIOLN]  │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  WHERE: HostelFeeCalculator field + constructor               │
+│  WHERE: JsonExporter.export()                                │
 │                                                              │
-│  private final FakeBookingRepo repo;                         │
-│                 ▲                                            │
-│                 concrete class — NO interface                 │
+│  if (req == null) return new ExportResult("application/json",│
+│                                            new byte[0]);     │
 │                                                              │
-│  HostelFeeCalculator ─── depends on ───► FakeBookingRepo     │
-│  (HIGH-level module)                      (LOW-level module) │
+│  WHAT OTHERS DO WITH null req:                               │
+│    PdfExporter  → NullPointerException (crash)               │
+│    CsvExporter  → NullPointerException (crash)               │
+│    JsonExporter → returns empty result (silent)              │
 │                                                              │
-│  WHY IT'S BAD:                                               │
-│    Want real database storage?                               │
-│      → Must change field type in HostelFeeCalculator         │
-│      → Can't swap FakeBookingRepo for DbBookingRepo          │
-│      → Can't mock for unit tests                             │
-│                                                              │
-│  DIP says: depend on ABSTRACTIONS, not concrete classes.     │
-│  Here:     high-level directly depends on low-level.         │
+│  THREE subclasses, THREE different behaviors for null.       │
+│  No consistent contract. Caller can't predict what happens.  │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  ISSUE 4: Magic numbers                    [CODE SMELL]      │
+│  ISSUE 4: Main needs try-catch (can't trust hierarchy)       │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  WHERE: calculateMonthly() + process()                        │
+│  WHERE: Main.safe() method                                   │
 │                                                              │
-│  14000.0  15000.0  12000.0  16000.0  ← room prices          │
-│  1000.0   500.0    300.0             ← add-on prices         │
-│  5000.00                             ← deposit               │
+│  try { e.export(r); } catch (RuntimeException ex) { ... }    │
 │                                                              │
-│  No names. No constants. No config. Just raw numbers.        │
-│  If MESS price changes from 1000→1200, you hunt for 1000.0  │
+│  WHY: Because PdfExporter THROWS for valid input.            │
+│    If LSP held, Main could just call e.export(r) directly.   │
+│    The try-catch IS the symptom of broken substitutability.  │
+│                                                              │
+│  IF you need instanceof or try-catch to handle subtypes      │
+│  differently → the hierarchy violates LSP.                   │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  ISSUE 5: process() does too much          [SRP VIOLATION]   │
+│  ISSUE 5: No defined contract on Exporter    [DESIGN SMELL]  │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  WHERE: process() method — 5 responsibilities:               │
+│  abstract ExportResult export(ExportRequest req);            │
 │                                                              │
-│    STEP 1: calculateMonthly()  ← pricing logic               │
-│    STEP 2: Money(5000.00)      ← deposit rule                │
-│    STEP 3: ReceiptPrinter      ← presentation                │
-│    STEP 4: generate ID         ← ID logic                    │
-│    STEP 5: repo.save()         ← persistence                 │
+│  WHAT'S MISSING:                                             │
+│    Preconditions:   Can req be null? Can body be null?        │
+│                     Is there a size limit?                    │
+│    Postconditions:  Must bytes be non-empty?                  │
+│                     Must data be faithful to input?           │
+│    Error handling:  Throw? Return error object? Return null?  │
 │                                                              │
-│  3 reasons to change in ONE class:                           │
-│    pricing changes  → edit this class                        │
-│    receipt changes   → edit this class                        │
-│    storage changes   → edit this class                        │
-│                                                              │
-│  SRP says: ONE reason to change per class.                   │
+│  Without a defined contract, each subclass invents its own.  │
+│  That's exactly WHY we have 3 different behaviors.           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -284,151 +253,117 @@ JSON: OK bytes=61
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  FIX for ISSUE 1 → RoomPricing interface (kills the switch)  │
+│  FIX 1: Add error handling TO THE CONTRACT (ExportResult)    │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  BEFORE (in calculateMonthly):                               │
-│    switch (req.roomType) {                                   │
-│        SINGLE → 14000 / DOUBLE → 15000 / ...                │
-│    }                                                         │
+│  BEFORE ExportResult:                                        │
+│    contentType: String                                       │
+│    bytes: byte[]                                             │
+│    ← no way to say "I failed" without throwing               │
 │                                                              │
-│  AFTER:                                                      │
-│  ┌──────────────────────────────┐                            │
-│  │  «interface» RoomPricing     │                            │
-│  │──────────────────────────────│                            │
-│  │  boolean supports(int type)  │  ← “am I the right one?”  │
-│  │  double basePrice()          │  ← “here's my price”      │
-│  └──────────────┬───────────────┘                            │
-│                 │ implements                                  │
-│      ┌──────────┼──────────┬──────────┐                      │
-│      ▼          ▼          ▼          ▼                      │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐                │
-│  │Single  │ │Double  │ │Triple  │ │Deluxe  │                │
-│  │Room    │ │Room    │ │Room    │ │Room    │                │
-│  │Pricing │ │Pricing │ │Pricing │ │Pricing │                │
-│  │────────│ │────────│ │────────│ │────────│                │
-│  │supports│ │supports│ │supports│ │supports│                │
-│  │(SINGLE)│ │(DOUBLE)│ │(TRIPLE)│ │(DELUXE)│                │
-│  │→14000  │ │→15000  │ │→12000  │ │→16000  │                │
-│  └────────┘ └────────┘ └────────┘ └────────┘                │
+│  AFTER ExportResult:                                         │
+│  ┌──────────────────────────────────────────┐                │
+│  │  ExportResult                            │                │
+│  │──────────────────────────────────────────│                │
+│  │  contentType: String                     │                │
+│  │  bytes: byte[]                           │                │
+│  │  success: boolean        ← NEW           │                │
+│  │  errorMessage: String    ← NEW           │                │
+│  │──────────────────────────────────────────│                │
+│  │  ExportResult(contentType, bytes)        │                │
+│  │    → success=true, errorMessage=null     │                │
+│  │                                          │                │
+│  │  static ExportResult.error(message)      │                │
+│  │    → success=false, bytes=empty          │                │
+│  └──────────────────────────────────────────┘                │
 │                                                              │
-│  In calculator — switch REPLACED with loop:                  │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │  for (RoomPricing rp : roomPricings) {                 │  │
-│  │      if (rp.supports(req.roomType)) {                  │  │
-│  │          base = rp.basePrice();                        │  │
-│  │          break;                                        │  │
-│  │      }                                                 │  │
-│  │  }                                                     │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  SUITE room? → new SuiteRoomPricing class, add to list.      │
-│  Calculator code? → UNTOUCHED. Switch is GONE.               │
+│  NOW: Exporters can report failure WITHOUT throwing.         │
+│  Error handling is part of the contract, not a surprise.     │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  FIX for ISSUE 2 → AddOnPricing interface (kills if-else)    │
-│──────────────────────────────────────────────────────────────│
-│                                                              │
-│  BEFORE (in calculateMonthly):                               │
-│    if (a == MESS) add += 1000                                │
-│    else if (a == LAUNDRY) add += 500                         │
-│    else if (a == GYM) add += 300                             │
-│                                                              │
-│  AFTER:                                                      │
-│  ┌──────────────────────────────┐                            │
-│  │  «interface» AddOnPricing    │                            │
-│  │──────────────────────────────│                            │
-│  │  boolean supports(AddOn a)   │  ← “am I the right one?”  │
-│  │  double price()              │  ← “here's my price”      │
-│  └──────────────┬───────────────┘                            │
-│                 │ implements                                  │
-│      ┌──────────┼──────────┐                                 │
-│      ▼          ▼          ▼                                 │
-│  ┌────────┐ ┌────────┐ ┌────────┐                            │
-│  │Mess    │ │Laundry │ │Gym     │                            │
-│  │AddOn   │ │AddOn   │ │AddOn   │                            │
-│  │Pricing │ │Pricing │ │Pricing │                            │
-│  │→1000   │ │→500    │ │→300    │                            │
-│  └────────┘ └────────┘ └────────┘                            │
-│                                                              │
-│  In calculator — if-else REPLACED with loop:                 │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │  for (AddOn a : req.addOns) {                          │  │
-│  │      for (AddOnPricing ap : addOnPricings) {           │  │
-│  │          if (ap.supports(a)) {                         │  │
-│  │              addOnTotal += ap.price();                  │  │
-│  │              break;                                    │  │
-│  │          }                                             │  │
-│  │      }                                                 │  │
-│  │  }                                                     │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-│  WIFI add-on? → new WifiAddOnPricing class, add to list.     │
-│  Calculator code? → UNTOUCHED. If-else is GONE.              │
-└──────────────────────────────────────────────────────────────┘
-
-┌──────────────────────────────────────────────────────────────┐
-│  FIX for ISSUE 3 → BookingRepository interface (kills DIP)   │
+│  FIX 2: PdfExporter — return error instead of throwing       │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
 │  BEFORE:                                                     │
-│    private final FakeBookingRepo repo; ← concrete            │
+│    if (body.length() > 20)                                   │
+│        throw new IllegalArgumentException(...)   ← THROWS!   │
 │                                                              │
 │  AFTER:                                                      │
-│    private final BookingRepository repo; ← interface!        │
+│    if (body.length() > 20)                                   │
+│        return ExportResult.error("PDF cannot handle...")      │
+│                            ⚠ returns, NOT throws             │
 │                                                              │
-│  ┌────────────────────────────────────────┐                  │
-│  │  «interface» BookingRepository          │                  │
-│  │────────────────────────────────────────│                  │
-│  │  void save(id, req, monthly, deposit)  │                  │
-│  └────────────────────┬───────────────────┘                  │
-│                       ▲ implements                           │
-│  ┌────────────────────┴───────────────────┐                  │
-│  │  FakeBookingRepo                       │                  │
-│  └────────────────────────────────────────┘                  │
-│                                                              │
-│  Real DB? → DbRepo implements BookingRepository.             │
-│  Calculator code? → UNTOUCHED.                               │
+│  Same information. Same message. But now it's                │
+│  PART OF THE CONTRACT, not a runtime surprise.               │
 └──────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  Wiring in Main — all injected via constructor               │
+│  FIX 3: CsvExporter — proper escaping instead of corruption  │
 │──────────────────────────────────────────────────────────────│
 │                                                              │
-│  List<RoomPricing> rooms = List.of(                          │
-│      new SingleRoomPricing(),    // SINGLE → 14000           │
-│      new DoubleRoomPricing(),    // DOUBLE → 15000           │
-│      new TripleRoomPricing(),    // TRIPLE → 12000           │
-│      new DeluxeRoomPricing()     // DELUXE → 16000           │
-│  );                                                          │
+│  BEFORE:                                                     │
+│    body.replace("\n", " ").replace(",", " ")                 │
+│    → DATA LOST. "Name,Score" becomes "Name Score"            │
 │                                                              │
-│  List<AddOnPricing> addOns = List.of(                        │
-│      new MessAddOnPricing(),     // MESS    → 1000           │
-│      new LaundryAddOnPricing(),  // LAUNDRY → 500            │
-│      new GymAddOnPricing()       // GYM     → 300            │
-│  );                                                          │
+│  AFTER:                                                      │
+│    csvEscape(s):                                             │
+│      if s contains , or \n or "                              │
+│        → wrap in quotes, escape inner quotes                 │
+│        → "Name,Score\nAyaan,82" stays intact                 │
 │                                                              │
-│  BookingRepository repo = new FakeBookingRepo();             │
+│  Data is PRESERVED, not destroyed.                           │
+│  Postcondition now matches base expectation.                 │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│  FIX 4: JsonExporter — consistent null handling              │
+│──────────────────────────────────────────────────────────────│
 │                                                              │
-│  calc = new HostelFeeCalculator(rooms, addOns, repo);        │
-│             ▲ constructor now takes interfaces/lists          │
+│  BEFORE:                                                     │
+│    if (req == null) return empty result  ← special case      │
 │                                                              │
-│  Everything created OUTSIDE, injected IN.                    │
+│  AFTER:                                                      │
+│    No special null-req handling.                              │
+│    Null fields (title/body) → treated as empty string "".    │
+│    Same approach as other exporters.                         │
+│    Consistent contract across all subtypes.                  │
+└──────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│  FIX 5: Main — no try-catch needed anymore                   │
+│──────────────────────────────────────────────────────────────│
+│                                                              │
+│  BEFORE:                                                     │
+│    try { e.export(r); } catch (RuntimeException ex) { ... }  │
+│    ← defensive because PdfExporter might throw               │
+│                                                              │
+│  AFTER:                                                      │
+│    ExportResult result = e.export(r);                        │
+│    if (!result.success)                                      │
+│        return "ERROR: " + result.errorMessage;               │
+│    return "OK bytes=" + result.bytes.length;                 │
+│                                                              │
+│  No try-catch. No instanceof. Just check the contract.       │
+│  ALL exporters behave the same way. SUBSTITUTABLE.           │
 └──────────────────────────────────────────────────────────────┘
 
 
-OCP PROOF:
+LSP SUMMARY:
 
-  SUITE room?   → new SuiteRoomPricing → add to list
-                  Calculator? NEVER TOUCHED  ✓
+  Exporter base contract NOW defines:
+    Precondition:  req must be non-null (ALL subtypes accept this)
+    Postcondition: returns ExportResult (success or error, NEVER throws)
+    Data rule:     export must faithfully represent input data
 
-  WIFI add-on?  → new WifiAddOnPricing → add to list
-                  Calculator? NEVER TOUCHED  ✓
+  BEFORE                               AFTER
+  ──────                               ─────
+  PdfExporter THROWS on long body →   Returns ExportResult.error()
+  CsvExporter CORRUPTS data       →   Proper CSV escaping
+  JsonExporter special null case  →   Consistent null handling
+  Main needs try-catch            →   Main checks result.success
+  No contract defined             →   Clear pre/postconditions
 
-  Real DB?      → DbRepo implements BookingRepository
-                  Calculator? NEVER TOUCHED  ✓
-
-  OPEN for extension. CLOSED for modification.
+  ANY Exporter subtype can be swapped in.
+  Caller code NEVER changes. That's LSP.
 ```
-
