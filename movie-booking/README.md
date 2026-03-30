@@ -12,40 +12,365 @@ A low-level design implementation of a movie ticket booking system demonstrating
 | **Builder** | `Show.Builder` | Shows have many configurable fields |
 | **Observer** | `BookingObserver` / `NotificationService` | Notify on booking confirm/cancel |
 
-## Class Diagram
+## Class Diagrams
+
+### Enums
 
 ```
-BookingService (Singleton - Bill Pugh Holder)
- |
- |-- has-many --> City
- |-- has-many --> Movie (multilingual titles via Map<String, String>)
- |-- has-many --> Theater
- |                  \-- has-many --> Screen
- |                                    \-- has-many --> Seat (SeatCategory: SILVER/GOLD/DIAMOND)
- |-- has-many --> Show (owns ReentrantLock for concurrency)
- |                  |-- refs --> Movie
- |                  |-- refs --> Screen
- |                  |-- has-many --> ShowSeat (Seat + SeatStatus + finalPrice)
- |                  \-- has-many --> PricingRule <<Strategy>>
- |                                    |-- ShowTimingPricingRule
- |                                    |-- DayOfWeekPricingRule
- |                                    |-- WeekOfMonthPricingRule
- |                                    \-- DemandPricingRule
- |-- has-many --> Booking
- |                  |-- refs --> User (email = unique ID)
- |                  |-- refs --> Show
- |                  |-- has-many --> ShowSeat
- |                  |-- has-one --> Payment
- |                  \-- has-one --> ScheduledFuture (hold timer)
- |-- has-many --> User
- |-- has-many --> BookingObserver <<Observer>>
- |                  \-- NotificationService
- |-- uses --> PaymentStrategyFactory
- |              \-- creates --> PaymentStrategy <<Strategy>>
- |                                |-- UpiPaymentStrategy
- |                                |-- CardPaymentStrategy
- |                                \-- NetBankingPaymentStrategy
- \-- owns --> ScheduledExecutorService (hold timer pool)
++---------------------+    +---------------------+    +---------------------+
+|  <<enumeration>>    |    |  <<enumeration>>    |    |  <<enumeration>>    |
+|    SeatCategory     |    |     SeatStatus      |    |   BookingStatus     |
++---------------------+    +---------------------+    +---------------------+
+| SILVER  (Rs.200)    |    | AVAILABLE           |    | INITIATED           |
+| GOLD    (Rs.500)    |    | HELD                |    | SEATS_HELD          |
+| DIAMOND (Rs.800)    |    | BOOKED              |    | CONFIRMED           |
++---------------------+    +---------------------+    | CANCELLED           |
+| - basePrice: double |                               +---------------------+
++---------------------+
+| + getBasePrice()    |
++---------------------+
+
++---------------------+    +---------------------+    +---------------------+
+|  <<enumeration>>    |    |  <<enumeration>>    |    |  <<enumeration>>    |
+|   PaymentMethod     |    |   PaymentStatus     |    |      DayType        |
++---------------------+    +---------------------+    +---------------------+
+| UPI                 |    | PENDING             |    | WEEKDAY             |
+| CARD                |    | SUCCESS             |    | WEEKEND             |
+| NET_BANKING         |    | FAILED              |    +---------------------+
++---------------------+    | REFUNDED            |    | + from(LocalDate)   |
+                           +---------------------+    +---------------------+
+
++---------------------+
+|  <<enumeration>>    |
+|    ShowTiming       |
++---------------------+
+| MORNING             |
+| AFTERNOON           |
+| EVENING             |
+| NIGHT               |
++---------------------+
+| + from(LocalTime)   |
++---------------------+
+```
+
+### Core Models
+
+```
++----------------------------+         +-----------------------------------+
+|           City             |         |             Movie                 |
++----------------------------+         +-----------------------------------+
+| - id: String               |         | - id: String                      |
+| - name: String             |         | - title: String                   |
++----------------------------+         | - localizedTitles: Map<String,    |
+| + getId(): String          |         |                        String>    |
+| + getName(): String        |         | - durationMinutes: int            |
++----------------------------+         | - genre: String                   |
+                                       +-----------------------------------+
+                                       | + getTitle(lang): String           |
+                                       | + getLocalizedTitles(): Map       |
+                                       +-----------------------------------+
+
++----------------------------+         +-----------------------------------+
+|           User             |         |           Payment                 |
++----------------------------+         +-----------------------------------+
+| - email: String  [unique]  |         | - id: String                      |
+| - name: String             |         | - bookingId: String               |
+| - phone: String            |         | - amount: double                  |
++----------------------------+         | - method: PaymentMethod           |
+| + getEmail(): String       |         | - status: PaymentStatus           |
+| + getName(): String        |         | - timestamp: LocalDateTime        |
+| + getPhone(): String       |         +-----------------------------------+
++----------------------------+         | + markSuccess()                   |
+                                       | + markFailed()                    |
+                                       | + markRefunded()                  |
+                                       +-----------------------------------+
+
++----------------------------+
+|           Seat             |
++----------------------------+
+| - id: String               |
+| - row: int                 |
+| - col: int                 |
+| - category: SeatCategory   |
++----------------------------+
+| + getId(): String          |
+| + getRow(): int            |
+| + getCol(): int            |
+| + getCategory(): SeatCat.. |
++----------------------------+
+```
+
+### Theater Structure (Theater has-many Screens, Screen has-many Seats)
+
+```
++----------------------------+    1..*    +----------------------------+   1..*   +------------------+
+|          Theater           |◆--------->|          Screen           |◆-------->|      Seat        |
++----------------------------+           +----------------------------+          +------------------+
+| - id: String               |           | - id: String               |          | (see above)      |
+| - name: String             |           | - name: String             |          +------------------+
+| - cityId: String           |           | - theaterId: String        |
+| - screens: List<Screen>    |           | - seats: List<Seat>        |
++----------------------------+           +----------------------------+
+| + addScreen(Screen)        |           | + getSeats(): List<Seat>   |
+| + getScreens(): List       |           +----------------------------+
++----------------------------+
+```
+
+### Show (Builder Pattern) — owns ReentrantLock for concurrency
+
+```
++------------------------------------------+        +----------------------------+
+|                 Show                     |        |        ShowSeat            |
++------------------------------------------+        +----------------------------+
+| - id: String                             |  1..*  | - seat: Seat               |
+| - movie: Movie                           |◆------>| - status: SeatStatus       |
+| - screen: Screen                         |        | - finalPrice: double       |
+| - startTime: LocalDateTime               |        +----------------------------+
+| - endTime: LocalDateTime                 |        | + hold()                   |
+| - seatMap: Map<String, ShowSeat>         |        |   AVAILABLE -> HELD        |
+| - lock: ReentrantLock                    |        | + book()                   |
+| - pricingRules: List<PricingRule>        |        |   HELD -> BOOKED           |
++------------------------------------------+        | + release()                |
+| + holdSeats(List<String>)     [locked]   |        |   any -> AVAILABLE         |
+| + confirmSeats(List<String>)  [locked]   |        +----------------------------+
+| + releaseSeats(List<String>)  [locked]   |
+| + getAvailableSeats(): List<ShowSeat>    |
+| + getTotalSeats(): int                   |
+| + getBookedSeatCount(): int              |
++------------------------------------------+
+| <<static inner class>>                   |
+| +--------------------------------------+ |
+| |           Show.Builder               | |
+| +--------------------------------------+ |
+| | + id(String): Builder                | |
+| | + movie(Movie): Builder              | |
+| | + screen(Screen): Builder            | |
+| | + startTime(LocalDateTime): Builder  | |
+| | + pricingRules(List): Builder        | |
+| | + build(): Show                      | |
+| +--------------------------------------+ |
++------------------------------------------+
+```
+
+### Booking (references Show, User, Payment)
+
+```
++-------------------------------------------+
+|               Booking                     |
++-------------------------------------------+
+| - id: String                              |
+| - user: User  ---------------------->  User
+| - show: Show  ---------------------->  Show
+| - seats: List<ShowSeat>                   |
+| - totalAmount: double                     |
+| - status: BookingStatus                   |
+| - payment: Payment  --------------->  Payment
+| - createdAt: LocalDateTime                |
+| - holdTimer: ScheduledFuture<?>           |
++-------------------------------------------+
+| + setStatus(BookingStatus)                |
+| + setPayment(Payment)                     |
+| + setHoldTimer(ScheduledFuture)           |
+| + cancelHoldTimer()                       |
++-------------------------------------------+
+```
+
+### Pricing Strategy (Strategy + Factory Pattern)
+
+```
+                  +---------------------------------------+
+                  |     <<interface>> PricingRule         |
+                  +---------------------------------------+
+                  | + apply(price, Show, Seat): double    |
+                  +---------------------------------------+
+                       ^         ^         ^         ^
+                       |         |         |         |
+        +--------------+--+  +---+-------+ | +-------+------------+
+        |                 |  |           | | |                    |
++-------+----------+ +----+--------+ +--+-+-------+ +------------+--------+
+| ShowTimingPricing| | DayOfWeek   | | WeekOfMonth| |  DemandPricingRule  |
+|      Rule        | | PricingRule | | PricingRule| +---------------------+
++------------------+ +-------------+ +------------+ | - highDemandThresh  |
+| Morning:  0.8x  | | Weekend:1.3x| | Week1: 1.1x| | - multiplier        |
+| Afternoon:0.9x  | | Weekday:1.0x| | Week4: 0.9x| +---------------------+
+| Evening:  1.2x  | +-------------+ | Mid:   1.0x| | occupancy >= thresh |
+| Night:    1.0x  |                  +------------+ |   => price * mult   |
++------------------+                                 +---------------------+
+
++------------------------------------------+
+|       PricingStrategyFactory             |
++------------------------------------------+
+| + defaultRules(): List<PricingRule>      |
+| + defaultRulesWithDemand(): List         |
+| + computePrice(Seat, Show,              |
+|       List<PricingRule>): double         |
++------------------------------------------+
+  Chains rules: base price -> rule1 -> rule2 -> ... -> final price
+```
+
+### Payment Strategy (Strategy + Factory Pattern)
+
+```
+              +------------------------------------------+
+              |    <<interface>> PaymentStrategy         |
+              +------------------------------------------+
+              | + pay(bookingId, amount): Payment        |
+              | + refund(Payment): Payment               |
+              +------------------------------------------+
+                     ^            ^            ^
+                     |            |            |
+          +----------+--+  +-----+------+  +--+--------------+
+          |             |  |            |  |                 |
++---------+--------+ +--+----------+ +-+------------------+
+| UpiPayment       | | CardPayment | | NetBankingPayment  |
+|    Strategy      | |   Strategy  | |     Strategy       |
++------------------+ +-------------+ +--------------------+
+| pay():  UPI txn  | | pay():CARD  | | pay(): NET_BANKING |
+| refund(): UPI    | | refund()    | | refund()           |
++------------------+ +-------------+ +--------------------+
+
++------------------------------------------+
+|       PaymentStrategyFactory             |
++------------------------------------------+
+| + getStrategy(PaymentMethod):            |
+|       PaymentStrategy                    |
++------------------------------------------+
+  UPI -> UpiPaymentStrategy
+  CARD -> CardPaymentStrategy
+  NET_BANKING -> NetBankingPaymentStrategy
+```
+
+### Observer Pattern
+
+```
+              +------------------------------------------+
+              |   <<interface>> BookingObserver          |
+              +------------------------------------------+
+              | + onBookingConfirmed(Booking)            |
+              | + onBookingCancelled(Booking)            |
+              +------------------------------------------+
+                               ^
+                               |
+              +------------------------------------------+
+              |        NotificationService              |
+              +------------------------------------------+
+              | + onBookingConfirmed(Booking)            |
+              |     => prints confirmation + email       |
+              | + onBookingCancelled(Booking)            |
+              |     => prints cancellation + refund      |
+              +------------------------------------------+
+```
+
+### BookingService (Singleton — Bill Pugh Holder)
+
+```
++----------------------------------------------------------------+
+|                      BookingService                            |
++----------------------------------------------------------------+
+| - cities: Map<String, City>                                    |
+| - movies: Map<String, Movie>                                   |
+| - theaters: Map<String, Theater>                               |
+| - shows: Map<String, Show>                                     |
+| - bookings: Map<String, Booking>                               |
+| - users: Map<String, User>                                     |
+| - observers: List<BookingObserver>                              |
+| - holdScheduler: ScheduledExecutorService                      |
+| - holdTimeoutMillis: long                                      |
++----------------------------------------------------------------+
+| <<Singleton>>                                                  |
+| - BookingService()               [private constructor]         |
+| + getInstance(): BookingService  [Bill Pugh Holder]            |
++----------------------------------------------------------------+
+| <<Admin APIs>>                                                 |
+| + addCity(City)                                                |
+| + addMovie(Movie)                                              |
+| + addTheater(Theater)                                          |
+| + addShow(Show)                                                |
++----------------------------------------------------------------+
+| <<User Query APIs>>                                            |
+| + getTheatersInCity(cityId): List<Theater>                     |
+| + getMoviesInCity(cityId): List<Movie>                         |
+| + getShowsForMovie(movieId): List<Show>                        |
+| + getShowsForMovie(movieId, cityId): List<Show>                |
+| + getSeatMap(showId): Map<String, ShowSeat>                    |
++----------------------------------------------------------------+
+| <<Booking APIs>>                                               |
+| + initiateBooking(email, showId, seatIds): Booking             |
+|     => hold seats + schedule timeout                           |
+| + confirmBooking(bookingId, PaymentMethod): Booking            |
+|     => cancel timer + pay + confirm seats                      |
+| + cancelBooking(bookingId): Booking                            |
+|     => release seats + refund + notify                         |
+| - releaseHold(bookingId)                                       |
+|     => auto-release on timeout                                 |
++----------------------------------------------------------------+
+| <<User Management>>                                            |
+| + registerUser(email, name, phone): User                       |
++----------------------------------------------------------------+
+| <<Observer>>                                                   |
+| + addObserver(BookingObserver)                                 |
+| - notifyConfirmed(Booking)                                     |
+| - notifyCancelled(Booking)                                     |
++----------------------------------------------------------------+
+| + shutdown()                                                   |
++----------------------------------------------------------------+
+```
+
+### Full Relationship Diagram
+
+```
+                            +----------------+
+                            |     City       |
+                            +-------+--------+
+                                    |
+                         cityId     |
+                            +-------+--------+
+                            |    Theater     |
+                            +-------+--------+
+                                    | 1..*
+                            +-------+--------+
+                            |    Screen      |
+                            +-------+--------+
+                                    | 1..*
+                            +-------+--------+
+                            |     Seat       |
+                            +----------------+
+                                    |
+                              wraps |
+                            +-------+--------+          +----------------+
+                            |   ShowSeat     |<---1..*--| <<PricingRule>>|
+                            +-------+--------+          +-------+--------+
+                                    | 1..*                      |
+                            +-------+--------+          implemented by:
+                  +-------->|     Show       |          - ShowTimingPricingRule
+                  |         +--+----+--------+          - DayOfWeekPricingRule
+                  |            |    |                    - WeekOfMonthPricingRule
+                  | refs       |    | refs               - DemandPricingRule
+                  |            |    |
+          +-------+--+        |    +--------+
+          |  Movie   |        |             |
+          +----------+   +----+------+ +----+------+
+                          |  Booking  | |   User    |
+                          +----+------+ +-----------+
+                               |
+                          +----+------+
+                          |  Payment  |
+                          +-----------+
+                               |
+                    processed by:
+              +----------------+----------------+
+              |                |                |
+    +---------+----+ +--------+-----+ +--------+---------+
+    |UpiPayment    | |CardPayment   | |NetBankingPayment |
+    |  Strategy    | |  Strategy    | |    Strategy       |
+    +--------------+ +--------------+ +------------------+
+              implements <<PaymentStrategy>>
+
+    BookingService (Singleton) orchestrates everything
+         |
+         +--- observers ---> <<BookingObserver>>
+                                  |
+                           NotificationService
 ```
 
 ## Concurrency Model
